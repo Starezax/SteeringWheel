@@ -55,6 +55,9 @@ SPI_HandleTypeDef hspi1;
 UART_HandleTypeDef huart2;
 
 /* USER CODE BEGIN PV */
+#define BUFFER_SIZE 3
+uint32_t potentiometer_buffer[BUFFER_SIZE] = {0};
+uint8_t buffer_index = 0;
 
 /* USER CODE END PV */
 
@@ -120,6 +123,18 @@ int main(void)
   MX_ADC1_Init();
   /* USER CODE BEGIN 2 */
   char msg[100];
+
+  uint32_t update_potentiometer_buffer(uint32_t new_value) {
+      potentiometer_buffer[buffer_index] = new_value;
+      buffer_index = (buffer_index + 1) % BUFFER_SIZE;
+
+      uint32_t sum = 0;
+      for (uint8_t i = 0; i < BUFFER_SIZE; i++) {
+          sum += potentiometer_buffer[i];
+      }
+
+      return sum / BUFFER_SIZE;
+  }
   /* USER CODE END 2 */
 
   /* Infinite loop */
@@ -130,23 +145,22 @@ int main(void)
     MX_USB_HOST_Process();
 
     /* USER CODE BEGIN 3 */
-    HAL_GPIO_TogglePin(GPIOD, GPIO_PIN_12);
-    HAL_UART_Transmit(&huart2, (uint8_t*)msg, sizeof(msg)-1, HAL_MAX_DELAY);
-    HAL_Delay(1000);
 
     HAL_ADC_Start(&hadc1);
-    if (HAL_ADC_PollForConversion(&hadc1, 100) == HAL_OK) {
-    	uint32_t adc_value = HAL_ADC_GetValue(&hadc1);
-    	uint32_t voltage_mv = (adc_value * 3300) / 4095;
-    	uint32_t voltage_v = voltage_mv / 1000;
-    	uint32_t voltage_dec = (voltage_mv % 1000) / 10;
+   if (HAL_ADC_PollForConversion(&hadc1, 100) == HAL_OK) {
+	   uint32_t adc_value = HAL_ADC_GetValue(&hadc1);
+	   uint32_t filtered_value = update_potentiometer_buffer(adc_value);
 
-    	uint32_t percentage_int = (adc_value * 100) / 4095;
-    	uint32_t percentage_dec = ((adc_value * 1000) / 4095) % 10;
+	   uint32_t voltage_mv = (filtered_value * 3300) / 4095;
+	   uint32_t voltage_v = voltage_mv / 1000;
+	   uint32_t voltage_dec = (voltage_mv % 1000) / 10;
 
-    	sprintf(msg1, "ADC: %4lu | Voltage: %lu.%02luV | Position: %lu.%lu%%\r\n", adc_value, voltage_v, voltage_dec, percentage_int, percentage_dec);
-    	HAL_UART_Transmit(&huart2, (uint8_t*)msg1, strlen(msg1), 100);
-    }
+	   uint32_t percentage_int = (filtered_value * 100) / 4095;
+	   uint32_t percentage_dec = ((filtered_value * 1000) / 4095) % 10;
+
+	   sprintf(msg, "ADC: %4lu | Voltage: %lu.%02luV | Position: %lu.%lu%%\r\n", filtered_value, voltage_v, voltage_dec, percentage_int, percentage_dec);
+	   HAL_UART_Transmit(&huart2, (uint8_t*)msg, strlen(msg), 100);
+   }
   }
   /* USER CODE END 3 */
 }
