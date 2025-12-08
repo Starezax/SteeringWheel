@@ -44,11 +44,7 @@
 ADC_HandleTypeDef hadc1;
 DMA_HandleTypeDef hdma_adc1;
 
-I2C_HandleTypeDef hi2c1;
-
 I2S_HandleTypeDef hi2s2;
-
-SPI_HandleTypeDef hspi1;
 
 TIM_HandleTypeDef htim1;
 TIM_HandleTypeDef htim2;
@@ -57,9 +53,6 @@ TIM_HandleTypeDef htim3;
 UART_HandleTypeDef huart2;
 
 /* USER CODE BEGIN PV */
-#define BUFFER_SIZE 3
-uint32_t potentiometer_buffer[BUFFER_SIZE] = {0};
-uint8_t buffer_index = 0;
 
 /* USER CODE END PV */
 
@@ -67,9 +60,7 @@ uint8_t buffer_index = 0;
 void SystemClock_Config(void);
 static void MX_GPIO_Init(void);
 static void MX_DMA_Init(void);
-static void MX_I2C1_Init(void);
 static void MX_I2S2_Init(void);
-static void MX_SPI1_Init(void);
 static void MX_USART2_UART_Init(void);
 static void MX_TIM2_Init(void);
 static void MX_ADC1_Init(void);
@@ -83,6 +74,143 @@ void MX_USB_HOST_Process(void);
 
 /* Private user code ---------------------------------------------------------*/
 /* USER CODE BEGIN 0 */
+uint16_t encoder_min = 0;
+uint16_t encoder_max = 0;
+uint16_t counterValue = 0;
+uint16_t normalizedCounter = 0;
+uint32_t accelerator = 0;
+uint32_t brake = 0;
+uint32_t clutch = 0;
+uint16_t button_mask = 0;
+
+uint8_t both_pressed_counter = 0;
+uint8_t calib_stage = 0;
+char msg[100];
+uint8_t rx_byte;
+char uart_buffer[32];
+uint8_t uart_index = 0;
+uint8_t gear = 0;
+uint16_t counter_val = 0;
+uint16_t normalized_counter = 0;
+
+static uint16_t ring_distance(uint16_t from, uint16_t to){
+    return (uint16_t)(to - from);
+}
+
+static uint16_t encode_to_15bit(uint16_t counter_value, uint16_t encoder_min, uint16_t encoder_max){
+    uint16_t full_range = ring_distance(encoder_max, encoder_min);
+    if (full_range == 0) {
+        return 0;
+    }
+
+    uint16_t pos = ring_distance(encoder_max, counter_value);
+
+    if (pos > full_range) {
+        pos = full_range;
+    }
+
+    uint32_t scaled = (uint32_t)pos * 32767u / full_range;
+    return (uint16_t)scaled;
+}
+
+uint16_t percent_to_pwm(uint8_t percent)
+{
+    if (percent > 100) percent = 100;
+    return (percent * htim3.Init.Period) / 100;
+}
+
+void motor_right(uint8_t percent)
+{
+    uint16_t pwm = percent_to_pwm(percent);
+    __HAL_TIM_SET_COMPARE(&htim3, TIM_CHANNEL_1, 0);
+    __HAL_TIM_SET_COMPARE(&htim3, TIM_CHANNEL_2, pwm);
+}
+
+void motor_left(uint8_t percent)
+{
+    uint16_t pwm = percent_to_pwm(percent);
+    __HAL_TIM_SET_COMPARE(&htim3, TIM_CHANNEL_1, pwm);
+    __HAL_TIM_SET_COMPARE(&htim3, TIM_CHANNEL_2, 0);
+}
+
+void motor_stop(void)
+{
+    __HAL_TIM_SET_COMPARE(&htim3, TIM_CHANNEL_1, 100);
+    __HAL_TIM_SET_COMPARE(&htim3, TIM_CHANNEL_2, 100);
+    HAL_Delay(100);
+}
+void HAL_UART_RxCpltCallback(UART_HandleTypeDef *huart)
+{
+    if (huart->Instance == USART2)
+    {
+        if (rx_byte == '0')
+        {
+            motor_left(100);
+        }
+        else if (rx_byte == '1')
+        {
+            motor_right(100);
+        }
+        else if (rx_byte == 'S' || rx_byte == '2')
+        {
+            motor_stop();
+        }
+
+        HAL_UART_Receive_IT(&huart2, &rx_byte, 1);
+    }
+}
+uint32_t read_adc_avg(ADC_HandleTypeDef* hadc, uint32_t channel) {
+    ADC_ChannelConfTypeDef sConfig = {0};
+    sConfig.Channel = channel;
+    sConfig.Rank = 1;
+    sConfig.SamplingTime = ADC_SAMPLETIME_480CYCLES;
+    HAL_ADC_ConfigChannel(hadc, &sConfig);
+
+    uint32_t sum = 0;
+    for (int i = 0; i < 10; i++) {
+        HAL_ADC_Start(hadc);
+        HAL_ADC_PollForConversion(hadc, HAL_MAX_DELAY);
+        sum += HAL_ADC_GetValue(hadc);
+        HAL_ADC_Stop(hadc);
+    }
+    return sum / 10;
+}
+
+
+void calibration(uint16_t *encoder_min, uint16_t *encoder_max, uint16_t power)
+{
+    uint16_t center = 16383;
+    while (HAL_GPIO_ReadPin(GPIOB, CALIBRATION_BUTTON_1_Pin) != GPIO_PIN_RESET)
+    {
+    	motor_left(power);
+    }
+    *encoder_max = __HAL_TIM_GET_COUNTER(&htim2);
+    while ((HAL_GPIO_ReadPin(GPIOB, CALIBRATION_BUTTON_2_Pin) != GPIO_PIN_RESET))
+    {
+        motor_right(power);
+    }
+    *encoder_min = __HAL_TIM_GET_COUNTER(&htim2);
+
+    counter_val = __HAL_TIM_GET_COUNTER(&htim2);
+    normalized_counter = encode_to_15bit(counter_val, *encoder_max, *encoder_min);
+	while (1u)
+	{
+		counter_val = __HAL_TIM_GET_COUNTER(&htim2);
+	    normalized_counter = encode_to_15bit(counter_val, *encoder_min, *encoder_max);
+	    if (normalized_counter > (center + 4000)){
+	    	motor_left(power);
+	    }
+	    else{
+	    	motor_stop();
+	    	break;
+	    }
+	}
+    motor_stop();
+
+    sprintf(msg, "CALIB DONE\nMIN=%u MAX=%u CENTER=%u\n", *encoder_min, *encoder_max, center);
+    HAL_UART_Transmit(&huart2, (uint8_t*)msg, strlen(msg), HAL_MAX_DELAY);
+}
+
 
 /* USER CODE END 0 */
 
@@ -116,9 +244,7 @@ int main(void)
   /* Initialize all configured peripherals */
   MX_GPIO_Init();
   MX_DMA_Init();
-  MX_I2C1_Init();
   MX_I2S2_Init();
-  MX_SPI1_Init();
   MX_USB_HOST_Init();
   MX_USART2_UART_Init();
   MX_TIM2_Init();
@@ -144,63 +270,109 @@ int main(void)
   GPIO_InitStruct.Alternate = GPIO_AF1_TIM2;
   HAL_GPIO_Init(GPIOA, &GPIO_InitStruct);
 
+
   HAL_TIM_Encoder_Start(&htim2, TIM_CHANNEL_ALL);
   HAL_TIM_Base_Start(&htim3);
 
-  uint16_t counterValue = 0;
-  uint16_t normalizedCounter = 0;
-  uint32_t adcValue1 = 0;
-  uint32_t adcValue2 = 0;
-  uint32_t adcValue3 = 0;
-  char msg[100];
+  HAL_TIM_PWM_Start(&htim3, TIM_CHANNEL_1);
+  HAL_TIM_PWM_Start(&htim3, TIM_CHANNEL_2);
 
-  uint32_t read_adc_avg(ADC_HandleTypeDef* hadc, uint32_t channel) {
-      ADC_ChannelConfTypeDef sConfig = {0};
-      sConfig.Channel = channel;
-      sConfig.Rank = 1;
-      sConfig.SamplingTime = ADC_SAMPLETIME_480CYCLES;
-      HAL_ADC_ConfigChannel(hadc, &sConfig);
+  HAL_UART_Receive_IT(&huart2, &rx_byte, 1);
 
-      uint32_t sum = 0;
-      for (int i = 0; i < 10; i++) {
-          HAL_ADC_Start(hadc);
-          HAL_ADC_PollForConversion(hadc, HAL_MAX_DELAY);
-          sum += HAL_ADC_GetValue(hadc);
-          HAL_ADC_Stop(hadc);
-      }
-      return sum / 10;
-  }
+  HAL_Delay(3000);
+  calibration(&encoder_min, &encoder_max, 25);
   /* USER CODE END 2 */
 
   /* Infinite loop */
   /* USER CODE BEGIN WHILE */
-  while (1)
-  {
-    /* USER CODE END WHILE */
-    MX_USB_HOST_Process();
+  while (1) {
+    		   MX_USB_HOST_Process();
+    		   counterValue = (uint16_t)__HAL_TIM_GET_COUNTER(&htim2);
 
-    /* USER CODE BEGIN 3 */
-    counterValue = (uint16_t)__HAL_TIM_GET_COUNTER(&htim2);
-	normalizedCounter = counterValue / 2;
-	normalizedCounter = normalizedCounter * 9;
+    		   button_mask = 0;
+    		   gear = 0;
+    		   if (HAL_GPIO_ReadPin(GPIOE, GPIO_PIN_7) == GPIO_PIN_RESET)
+    			   button_mask |= (1 << 0);
 
-	if (normalizedCounter > 32767) {
-		normalizedCounter = 32767;
-	}
+    		   if (HAL_GPIO_ReadPin(GPIOE, GPIO_PIN_8) == GPIO_PIN_RESET)
+    			   button_mask |= (1 << 1);
+
+    		   if (HAL_GPIO_ReadPin(GEAR_1_GPIO_Port, GEAR_1_Pin) == GPIO_PIN_RESET)
+    			 gear = 1;
+
+    		   if (HAL_GPIO_ReadPin(GEAR_2_GPIO_Port, GEAR_2_Pin) == GPIO_PIN_RESET)
+    			 gear = 2;
+
+    		   if (HAL_GPIO_ReadPin(GEAR_3_GPIO_Port, GEAR_3_Pin) == GPIO_PIN_RESET)
+    			 gear = 3;
+
+    		   if (HAL_GPIO_ReadPin(GEAR_4_GPIO_Port, GEAR_4_Pin) == GPIO_PIN_RESET)
+    			 gear = 4;
+
+    		   if (HAL_GPIO_ReadPin(GEAR_5_GPIO_Port, GEAR_5_Pin) == GPIO_PIN_RESET)
+    			 gear = 5;
+
+    		   if (HAL_GPIO_ReadPin(GEAR_6_GPIO_Port, GEAR_6_Pin) == GPIO_PIN_RESET)
+    			 gear = 6;
+
+    		   if ((HAL_GPIO_ReadPin(GEAR_6_GPIO_Port, GEAR_6_Pin) == GPIO_PIN_RESET)
+    				   && ((HAL_GPIO_ReadPin(GPIOB, R_ENABLE_Pin) == GPIO_PIN_RESET))){
+    			 gear = 7;
+    		   }
+
+    		   if (HAL_GPIO_ReadPin(GPIOA, BUTTON_1_Pin) == GPIO_PIN_RESET){
+    			 button_mask |= (1 << 2);
+    		   }
+    		   if (HAL_GPIO_ReadPin(GPIOD, BUTTON_2_Pin) == GPIO_PIN_RESET){
+    			   button_mask |= (1 << 3);
+    		   }
+    		   if (HAL_GPIO_ReadPin(GPIOC, BUTTON_3_Pin) == GPIO_PIN_RESET){
+    			  button_mask |= (1 << 4);
+    		   }
+    		   if (HAL_GPIO_ReadPin(GPIOD, BUTTON_4_Pin) == GPIO_PIN_RESET){
+    			  button_mask |= (1 << 5);
+    		   }
+    		   if (HAL_GPIO_ReadPin(GPIOC, BUTTON_6_Pin) == GPIO_PIN_RESET){
+    				  button_mask |= (1 << 7);
+    			 }
+    		   if (HAL_GPIO_ReadPin(GPIOC, BUTTON_7_Pin) == GPIO_PIN_RESET){
+    				  button_mask |= (1 << 8);
+    			 }
+    		   if (HAL_GPIO_ReadPin(GPIOB, BUTTON_8_Pin) == GPIO_PIN_RESET){
+    				  button_mask |= (1 << 9);
+    			 }
+    		   if (HAL_GPIO_ReadPin(GPIOD, BUTTON_5_Pin) == GPIO_PIN_RESET){
+    				  button_mask |= (1 << 6);
+    			 }
+    		   normalizedCounter = encode_to_15bit(counterValue, encoder_min, encoder_max);
+
+    		   accelerator = read_adc_avg(&hadc1, ADC_CHANNEL_8);
+    		   brake = read_adc_avg(&hadc1, ADC_CHANNEL_14);
+    		   clutch = read_adc_avg(&hadc1, ADC_CHANNEL_15);
+
+    		   uint8_t calibration_buttons = 0;
+
+    		  if (HAL_GPIO_ReadPin(GPIOB, CALIBRATION_BUTTON_1_Pin) == GPIO_PIN_RESET){
+    			   calibration_buttons = 1;
+    		  }
+    		  if (HAL_GPIO_ReadPin(GPIOB, CALIBRATION_BUTTON_2_Pin) == GPIO_PIN_RESET){
+    			   calibration_buttons = 2;
+    		  }
 
 
 
-//	adcValue1 = read_adc_avg(&hadc1, ADC_CHANNEL_8);
-	adcValue2 = read_adc_avg(&hadc1, ADC_CHANNEL_14);
-//	adcValue3 = read_adc_avg(&hadc1, ADC_CHANNEL_15);
+                   sprintf(msg, "%u|%lu|%lu|%lu|%u|%u\r\n",
+                		normalizedCounter,
+						brake,
+                        clutch,
+						accelerator,
+        				gear,
+    					button_mask);
+                   HAL_UART_Transmit(&huart2, (uint8_t*)msg, strlen(msg), HAL_MAX_DELAY);
 
-	sprintf(msg, "%u|%lu|%lu|%lu|0\r\n", normalizedCounter, adcValue1, adcValue3, adcValue2);
-	HAL_UART_Transmit(&huart2, (uint8_t *)msg, strlen(msg), HAL_MAX_DELAY);
+      	 	 }
+      	 /* USER CODE END 3 */
 
-	HAL_Delay(50);
-
-  }
-  /* USER CODE END 3 */
 }
 
 /**
@@ -319,40 +491,6 @@ static void MX_ADC1_Init(void)
 }
 
 /**
-  * @brief I2C1 Initialization Function
-  * @param None
-  * @retval None
-  */
-static void MX_I2C1_Init(void)
-{
-
-  /* USER CODE BEGIN I2C1_Init 0 */
-
-  /* USER CODE END I2C1_Init 0 */
-
-  /* USER CODE BEGIN I2C1_Init 1 */
-
-  /* USER CODE END I2C1_Init 1 */
-  hi2c1.Instance = I2C1;
-  hi2c1.Init.ClockSpeed = 100000;
-  hi2c1.Init.DutyCycle = I2C_DUTYCYCLE_2;
-  hi2c1.Init.OwnAddress1 = 0;
-  hi2c1.Init.AddressingMode = I2C_ADDRESSINGMODE_7BIT;
-  hi2c1.Init.DualAddressMode = I2C_DUALADDRESS_DISABLE;
-  hi2c1.Init.OwnAddress2 = 0;
-  hi2c1.Init.GeneralCallMode = I2C_GENERALCALL_DISABLE;
-  hi2c1.Init.NoStretchMode = I2C_NOSTRETCH_DISABLE;
-  if (HAL_I2C_Init(&hi2c1) != HAL_OK)
-  {
-    Error_Handler();
-  }
-  /* USER CODE BEGIN I2C1_Init 2 */
-
-  /* USER CODE END I2C1_Init 2 */
-
-}
-
-/**
   * @brief I2S2 Initialization Function
   * @param None
   * @retval None
@@ -383,44 +521,6 @@ static void MX_I2S2_Init(void)
   /* USER CODE BEGIN I2S2_Init 2 */
 
   /* USER CODE END I2S2_Init 2 */
-
-}
-
-/**
-  * @brief SPI1 Initialization Function
-  * @param None
-  * @retval None
-  */
-static void MX_SPI1_Init(void)
-{
-
-  /* USER CODE BEGIN SPI1_Init 0 */
-
-  /* USER CODE END SPI1_Init 0 */
-
-  /* USER CODE BEGIN SPI1_Init 1 */
-
-  /* USER CODE END SPI1_Init 1 */
-  /* SPI1 parameter configuration*/
-  hspi1.Instance = SPI1;
-  hspi1.Init.Mode = SPI_MODE_MASTER;
-  hspi1.Init.Direction = SPI_DIRECTION_2LINES;
-  hspi1.Init.DataSize = SPI_DATASIZE_8BIT;
-  hspi1.Init.CLKPolarity = SPI_POLARITY_LOW;
-  hspi1.Init.CLKPhase = SPI_PHASE_1EDGE;
-  hspi1.Init.NSS = SPI_NSS_SOFT;
-  hspi1.Init.BaudRatePrescaler = SPI_BAUDRATEPRESCALER_2;
-  hspi1.Init.FirstBit = SPI_FIRSTBIT_MSB;
-  hspi1.Init.TIMode = SPI_TIMODE_DISABLE;
-  hspi1.Init.CRCCalculation = SPI_CRCCALCULATION_DISABLE;
-  hspi1.Init.CRCPolynomial = 10;
-  if (HAL_SPI_Init(&hspi1) != HAL_OK)
-  {
-    Error_Handler();
-  }
-  /* USER CODE BEGIN SPI1_Init 2 */
-
-  /* USER CODE END SPI1_Init 2 */
 
 }
 
@@ -525,7 +625,7 @@ static void MX_TIM2_Init(void)
   htim2.Init.Period = 4294967295;
   htim2.Init.ClockDivision = TIM_CLOCKDIVISION_DIV1;
   htim2.Init.AutoReloadPreload = TIM_AUTORELOAD_PRELOAD_DISABLE;
-  sConfig.EncoderMode = TIM_ENCODERMODE_TI12;
+  sConfig.EncoderMode = TIM_ENCODERMODE_TI1;
   sConfig.IC1Polarity = TIM_ICPOLARITY_RISING;
   sConfig.IC1Selection = TIM_ICSELECTION_DIRECTTI;
   sConfig.IC1Prescaler = TIM_ICPSC_DIV1;
@@ -569,9 +669,9 @@ static void MX_TIM3_Init(void)
 
   /* USER CODE END TIM3_Init 1 */
   htim3.Instance = TIM3;
-  htim3.Init.Prescaler = 0;
+  htim3.Init.Prescaler = 83;
   htim3.Init.CounterMode = TIM_COUNTERMODE_UP;
-  htim3.Init.Period = 65535;
+  htim3.Init.Period = 49;
   htim3.Init.ClockDivision = TIM_CLOCKDIVISION_DIV1;
   htim3.Init.AutoReloadPreload = TIM_AUTORELOAD_PRELOAD_ENABLE;
   if (HAL_TIM_PWM_Init(&htim3) != HAL_OK)
@@ -593,10 +693,6 @@ static void MX_TIM3_Init(void)
     Error_Handler();
   }
   if (HAL_TIM_PWM_ConfigChannel(&htim3, &sConfigOC, TIM_CHANNEL_2) != HAL_OK)
-  {
-    Error_Handler();
-  }
-  if (HAL_TIM_PWM_ConfigChannel(&htim3, &sConfigOC, TIM_CHANNEL_3) != HAL_OK)
   {
     Error_Handler();
   }
@@ -687,8 +783,7 @@ static void MX_GPIO_Init(void)
   HAL_GPIO_WritePin(OTG_FS_PowerSwitchOn_GPIO_Port, OTG_FS_PowerSwitchOn_Pin, GPIO_PIN_SET);
 
   /*Configure GPIO pin Output Level */
-  HAL_GPIO_WritePin(GPIOD, LD4_Pin|LD3_Pin|LD5_Pin|LD6_Pin
-                          |Audio_RST_Pin, GPIO_PIN_RESET);
+  HAL_GPIO_WritePin(GPIOD, LD4_Pin|LD3_Pin|LD5_Pin|LD6_Pin, GPIO_PIN_RESET);
 
   /*Configure GPIO pin : DATA_Ready_Pin */
   GPIO_InitStruct.Pin = DATA_Ready_Pin;
@@ -701,12 +796,6 @@ static void MX_GPIO_Init(void)
   GPIO_InitStruct.Mode = GPIO_MODE_OUTPUT_PP;
   GPIO_InitStruct.Pull = GPIO_NOPULL;
   GPIO_InitStruct.Speed = GPIO_SPEED_FREQ_LOW;
-  HAL_GPIO_Init(GPIOE, &GPIO_InitStruct);
-
-  /*Configure GPIO pins : INT1_Pin INT2_Pin MEMS_INT2_Pin */
-  GPIO_InitStruct.Pin = INT1_Pin|INT2_Pin|MEMS_INT2_Pin;
-  GPIO_InitStruct.Mode = GPIO_MODE_EVT_RISING;
-  GPIO_InitStruct.Pull = GPIO_NOPULL;
   HAL_GPIO_Init(GPIOE, &GPIO_InitStruct);
 
   /*Configure GPIO pin : OTG_FS_PowerSwitchOn_Pin */
@@ -724,28 +813,68 @@ static void MX_GPIO_Init(void)
   GPIO_InitStruct.Alternate = GPIO_AF2_TIM5;
   HAL_GPIO_Init(GPIOA, &GPIO_InitStruct);
 
-  /*Configure GPIO pins : LD4_Pin LD3_Pin LD5_Pin LD6_Pin
-                           Audio_RST_Pin */
-  GPIO_InitStruct.Pin = LD4_Pin|LD3_Pin|LD5_Pin|LD6_Pin
-                          |Audio_RST_Pin;
+  /*Configure GPIO pins : PE7 PE8 */
+  GPIO_InitStruct.Pin = GPIO_PIN_7|GPIO_PIN_8;
+  GPIO_InitStruct.Mode = GPIO_MODE_INPUT;
+  GPIO_InitStruct.Pull = GPIO_PULLUP;
+  HAL_GPIO_Init(GPIOE, &GPIO_InitStruct);
+
+  /*Configure GPIO pins : GEAR_6_Pin GEAR_2_Pin BUTTON_5_Pin BUTTON_2_Pin
+                           BUTTON_4_Pin GEAR_1_Pin GEAR_3_Pin GEAR_4_Pin
+                           GEAR_5_Pin */
+  GPIO_InitStruct.Pin = GEAR_6_Pin|GEAR_2_Pin|BUTTON_5_Pin|BUTTON_2_Pin
+                          |BUTTON_4_Pin|GEAR_1_Pin|GEAR_3_Pin|GEAR_4_Pin
+                          |GEAR_5_Pin;
+  GPIO_InitStruct.Mode = GPIO_MODE_INPUT;
+  GPIO_InitStruct.Pull = GPIO_PULLUP;
+  HAL_GPIO_Init(GPIOD, &GPIO_InitStruct);
+
+  /*Configure GPIO pins : LD4_Pin LD3_Pin LD5_Pin LD6_Pin */
+  GPIO_InitStruct.Pin = LD4_Pin|LD3_Pin|LD5_Pin|LD6_Pin;
   GPIO_InitStruct.Mode = GPIO_MODE_OUTPUT_PP;
   GPIO_InitStruct.Pull = GPIO_NOPULL;
   GPIO_InitStruct.Speed = GPIO_SPEED_FREQ_LOW;
   HAL_GPIO_Init(GPIOD, &GPIO_InitStruct);
 
-  /*Configure GPIO pins : I2S3_MCK_Pin I2S3_SCK_Pin I2S3_SD_Pin */
-  GPIO_InitStruct.Pin = I2S3_MCK_Pin|I2S3_SCK_Pin|I2S3_SD_Pin;
+  /*Configure GPIO pin : I2S3_MCK_Pin */
+  GPIO_InitStruct.Pin = I2S3_MCK_Pin;
   GPIO_InitStruct.Mode = GPIO_MODE_AF_PP;
   GPIO_InitStruct.Pull = GPIO_NOPULL;
   GPIO_InitStruct.Speed = GPIO_SPEED_FREQ_LOW;
   GPIO_InitStruct.Alternate = GPIO_AF6_SPI3;
+  HAL_GPIO_Init(I2S3_MCK_GPIO_Port, &GPIO_InitStruct);
+
+  /*Configure GPIO pins : BUTTON_3_Pin BUTTON_7_Pin BUTTON_6_Pin */
+  GPIO_InitStruct.Pin = BUTTON_3_Pin|BUTTON_7_Pin|BUTTON_6_Pin;
+  GPIO_InitStruct.Mode = GPIO_MODE_INPUT;
+  GPIO_InitStruct.Pull = GPIO_PULLUP;
   HAL_GPIO_Init(GPIOC, &GPIO_InitStruct);
 
-  /*Configure GPIO pin : OTG_FS_OverCurrent_Pin */
-  GPIO_InitStruct.Pin = OTG_FS_OverCurrent_Pin;
+  /*Configure GPIO pin : BUTTON_1_Pin */
+  GPIO_InitStruct.Pin = BUTTON_1_Pin;
   GPIO_InitStruct.Mode = GPIO_MODE_INPUT;
+  GPIO_InitStruct.Pull = GPIO_PULLUP;
+  HAL_GPIO_Init(BUTTON_1_GPIO_Port, &GPIO_InitStruct);
+
+  /*Configure GPIO pins : R_ENABLE_Pin BUTTON_8_Pin CALIBRATION_BUTTON_1_Pin CALIBRATION_BUTTON_2_Pin */
+  GPIO_InitStruct.Pin = R_ENABLE_Pin|BUTTON_8_Pin|CALIBRATION_BUTTON_1_Pin|CALIBRATION_BUTTON_2_Pin;
+  GPIO_InitStruct.Mode = GPIO_MODE_INPUT;
+  GPIO_InitStruct.Pull = GPIO_PULLUP;
+  HAL_GPIO_Init(GPIOB, &GPIO_InitStruct);
+
+  /*Configure GPIO pin : Audio_SCL_Pin */
+  GPIO_InitStruct.Pin = Audio_SCL_Pin;
+  GPIO_InitStruct.Mode = GPIO_MODE_AF_OD;
+  GPIO_InitStruct.Pull = GPIO_PULLUP;
+  GPIO_InitStruct.Speed = GPIO_SPEED_FREQ_LOW;
+  GPIO_InitStruct.Alternate = GPIO_AF4_I2C1;
+  HAL_GPIO_Init(Audio_SCL_GPIO_Port, &GPIO_InitStruct);
+
+  /*Configure GPIO pin : MEMS_INT2_Pin */
+  GPIO_InitStruct.Pin = MEMS_INT2_Pin;
+  GPIO_InitStruct.Mode = GPIO_MODE_EVT_RISING;
   GPIO_InitStruct.Pull = GPIO_NOPULL;
-  HAL_GPIO_Init(OTG_FS_OverCurrent_GPIO_Port, &GPIO_InitStruct);
+  HAL_GPIO_Init(MEMS_INT2_GPIO_Port, &GPIO_InitStruct);
 
   /* USER CODE BEGIN MX_GPIO_Init_2 */
 
