@@ -70,6 +70,16 @@ inline void trimCRLF(std::string& s) {
 }
 
 
+void normalizeInput(UARTFrame& f) {
+    // if (f.paddles < PADDLES_MIN) f.paddles = PADDLES_MIN;
+    // if (f.paddles > PADDLES_MAX) f.paddles = PADDLES_MAX;
+
+    if (f.gear < GEAR_MIN) f.gear = GEAR_MIN;
+    if (f.gear > GEAR_MAX) f.gear = GEAR_MAX;
+
+}
+
+
 std::optional<UARTFrame> parseFrame(const std::string& line) {
     std::string clean = line;
 
@@ -77,30 +87,32 @@ std::optional<UARTFrame> parseFrame(const std::string& line) {
     if (clean.empty())
         return std::nullopt;
 
-    std::string vals[5];
+    std::string vals[INPUTS_COUNT];
     size_t idx = 0;
     size_t start = 0;
-    for (; idx < 5; ++idx) {
+    for (; idx < INPUTS_COUNT; ++idx) {
         const size_t comma = clean.find('|', start);
         std::string token = (comma == std::string::npos)
                                 ? clean.substr(start)
                                 : clean.substr(start, comma - start);
 
-        // std::cout << token << std::endl;
-        // std::cout << idx << std::endl;
         if (token.empty()) return std::nullopt;
         vals[idx] = token;
         if (comma == std::string::npos) break;
         start = comma + 1;
     }
-    if (idx != 4) return std::nullopt;
+    if (idx != INPUTS_COUNT - 1) return std::nullopt;
 
     UARTFrame f{};
     if (!parse_u16_str(vals[0], f.wheel))  return std::nullopt;
     if (!parse_u16_str(vals[1], f.clutch)) return std::nullopt;
     if (!parse_u16_str(vals[2], f.brake)) return std::nullopt;
     if (!parse_u16_str(vals[3], f.acceleration)) return std::nullopt;
-    if (f.paddles > 4) f.paddles &= 0x03;
+    if (!parse_u8_str(vals[4], f.gear)) return std::nullopt;
+    if (!parse_u16_str(vals[5], f.buttons)) f.buttons = 0;
+
+    normalizeInput(f);
+
     return f;
 }
 

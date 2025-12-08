@@ -8,13 +8,14 @@
 #include <ostream>
 
 #include "feeder.h"
+#include "ffb.h"
 #include "public.h"
 #include "vJoyInterface.h"
 
 
-Pedal accPedal { };
-Pedal brakePedal {};
-Pedal clutchPedal {};
+Pedal accPedal { 1400, 3700 };
+Pedal brakePedal { 280, 1600};
+Pedal clutchPedal {160, 2300};
 
 double emaAcc = 0.0;
 double emaBrake = 0.0;
@@ -51,7 +52,7 @@ int main() {
     std::cout << "Initialized vJoy device ID: " << rID << std::endl;
     std::cout << "Vendor: " << TEXT(GetvJoyManufacturerString()) <<
         "\nProduct: " << TEXT(GetvJoyProductString()) <<
-        "\nVersion Number:" << TEXT(GetvJoySerialNumberString()) << std::endl;
+        "\nVersion Number: " << TEXT(GetvJoySerialNumberString()) << std::endl;
 
     const VjdStat status = GetVJDStatus(rID);
     if (status == VJD_STAT_BUSY || status == VJD_STAT_MISS) {
@@ -65,26 +66,30 @@ int main() {
 
     ResetVJD(rID);
 
+    FFBCtx ffbCtx {};
+    ffbCtx.devID = rID;
+    FfbRegisterGenCB(ffbCallback, &ffbCtx);
+
     HANDLE h = openSerial(comName, CBR_9600);
     if (h == INVALID_HANDLE_VALUE) return 1;
 
-    std::string pending;
+    UINT8 lastGear = GEAR_1;
     std::string line;
+    std::string pending;
     while (running.load(std::memory_order_relaxed)) {
-        std::cout << "Running cycle" << std::endl;
         if (!readLineUntilEnd(h, pending, line)) {
-            std::cout << "Skipping line " << line << std::endl;
             continue;
         }
 
-        const std::optional<UARTFrame> f = parseFrame(line);
-        if (!f) continue;
-        std::cout << "Continue: " << f->clutch << std::endl;
-        const LONG clutch = scalePedal(f->clutch, clutchPedal, &emaClutch);
-        const LONG brake = scalePedal(f->brake, brakePedal, &emaBrake);
-        const LONG acc = scalePedal(f->acceleration, accPedal, &emaAcc);
+        std::optional<UARTFrame> f_or_none = parseFrame(line);
+        if (!f_or_none || !f_or_none.has_value()) continue;
+        UARTFrame f = f_or_none.value();
 
-        feed(rID, f->wheel, clutch, brake, acc, f->paddles);
+        f.clutch = scalePedal(f.clutch, clutchPedal, &emaClutch);
+        f.brake = scalePedal(f.brake, brakePedal, &emaBrake);
+        f.acceleration = scalePedal(f.acceleration, accPedal, &emaAcc);
+
+        feed(rID, f, &lastGear);
     }
 
     CloseHandle(h);

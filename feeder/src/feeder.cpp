@@ -46,26 +46,46 @@ LONG scalePedal(
     return out;
 }
 
-void feed(
-    const UINT rID,
-    const LONG wheel,
-    const LONG clutch,
-    const LONG brake,
-    const LONG acceleration,
-    const UINT8 paddles
-) {
-    SetAxis(wheel, rID, WHEEL_AXIS);
-    SetAxis(clutch, rID, CLUTCH_AXIS);
-    SetAxis(brake, rID, BRAKE_AXIS);
-    SetAxis(acceleration, rID, ACCELERATION_AXIS);
+void feedGears(const UINT rID, const UINT8 gear, UINT8 *lastGear) {
+    if (gear == 0) {
+        // neutral gear
+        if (*lastGear != 0) {
+            // only feed if not neutral already
+            SetBtn(FALSE, rID, *lastGear);
+            *lastGear = 0;
+        }
+        return;
+    }
 
-    // Paddles → buttons
-    const bool left  = (paddles & 0x01) != 0;
-    const bool right = (paddles & 0x02) != 0;
-    SetBtn(left  ? TRUE : FALSE, rID, PADDLE_LEFT_BTN);
-    SetBtn(right ? TRUE : FALSE, rID, PADDLE_RIGHT_BTN);
+    const UINT8 gearBtn = gear + 10;    // gear + 10 offset = btn number
+    if (gearBtn != *lastGear) {
+        SetBtn(FALSE, rID, *lastGear);  // release current gear
+        SetBtn(TRUE, rID, gearBtn);     // switch to the next gear
+        *lastGear = gearBtn;
+    }
 }
 
+void feed(const UINT rID, const UARTFrame &f, UINT8 *lastGear) {
+    SetAxis(f.wheel, rID, WHEEL_AXIS);
+    SetAxis(f.clutch, rID, CLUTCH_AXIS);
+    SetAxis(f.brake, rID, BRAKE_AXIS);
+    SetAxis(f.acceleration, rID, ACCELERATION_AXIS);
+
+    // Paddles & buttons
+    SetBtn(isSet(f.buttons, 0), rID, PADDLE_LEFT_BTN);
+    SetBtn(isSet(f.buttons, 1), rID, PADDLE_RIGHT_BTN);
+    SetBtn(isSet(f.buttons, 2), rID, L1_BTN);
+    SetBtn(isSet(f.buttons, 3), rID, R1_BTN);
+    SetBtn(isSet(f.buttons, 4), rID, L2_BTN);
+    SetBtn(isSet(f.buttons, 5), rID, R2_BTN);
+    SetBtn(isSet(f.buttons, 6), rID, L3_BTN);
+    SetBtn(isSet(f.buttons, 7), rID, R3_BTN);
+    SetBtn(isSet(f.buttons, 8), rID, L4_BTN);
+    SetBtn(isSet(f.buttons, 9), rID, R4_BTN);
+
+    // gears
+    feedGears(rID, f.gear, lastGear);
+}
 
 void cleanup(const UINT rID) {
     SetAxis(0, rID, WHEEL_AXIS);
@@ -76,5 +96,4 @@ void cleanup(const UINT rID) {
     SetBtn(FALSE, rID, PADDLE_RIGHT_BTN);
 
     RelinquishVJD(rID);
-
 }

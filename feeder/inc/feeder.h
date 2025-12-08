@@ -29,59 +29,74 @@
 #define L4_BTN 7
 #define R4_BTN 8
 
+#define GEAR_1 11
+#define GEAR_2 12
+#define GEAR_3 13
+#define GEAR_4 14
+#define GEAR_5 15
+#define GEAR_6 16
+#define GEAR_R 17
+
 #define AXIS_MIN 0
 #define AXIS_MAX 32767
 
 #define PEDAL_MIN 20
 #define PEDAL_MAX 900
 
+#define PADDLES_MIN 0
+#define PADDLES_MAX 3
+
+#define GEAR_MIN 0
+#define GEAR_MAX 7
+
+#define INPUTS_COUNT 6
+
 
 struct Pedal {
-    uint16_t min = 20;
-    uint16_t max = 900;
+    UINT16 min = 20;
+    UINT16 max = 900;
     bool inverted = false;
     double expo = 0.12;
 };
 
 struct UARTFrame {
-    UINT16 wheel;
-    UINT16 clutch;
-    UINT16 brake;
-    UINT16 acceleration;
-    UINT8 paddles;
+    UINT16 wheel = AXIS_MAX / 2;
+    UINT16 clutch = PEDAL_MAX;
+    UINT16 brake = PEDAL_MIN;
+    UINT16 acceleration = PEDAL_MIN;
+    UINT8 gear = GEAR_MIN;
+    UINT16 buttons = 0;
 };
 
 bool readLineUntilEnd( HANDLE h, std::string& pending, std::string& out );
 std::optional<UARTFrame> parseFrame(const std::string& line);
 HANDLE openSerial(const wchar_t* com_name, DWORD baud = CBR_9600);
-void feed(
-    UINT rID,
-    LONG wheel,
-    LONG clutch,
-    LONG brake,
-    LONG acceleration,
-    UINT8 paddles
-);
+void feedGears(UINT, UINT8 gear, UINT8*);
+void feed(UINT, const UARTFrame&, UINT8*);
 void cleanup(UINT rID);
 LONG scalePedal(UINT16 raw, const Pedal &p, double *ema_state = nullptr, double ema_alpha = 0.0);
+
+inline BOOL isSet(const UINT16 buttons, const UINT16 pos) {
+    return (buttons >> pos) & 1;
+}
 
 // Exponential Moving Average for smoothing
 inline double ema_step(const double x, const double prev, const double alpha=0.2) {
     return alpha * x + (1.0 - alpha) * prev;
 }
 
-inline bool parse_u16_str(const std::string& s, uint16_t& v) {
+inline bool parse_u16_str(const std::string& s, UINT16& v) {
     const unsigned long val = std::stoul(s);
     if (val > 65535UL)
         return false;
-    v = static_cast<uint16_t>(val);
+    v = static_cast<UINT16>(val);
     return true;
 }
 
-inline bool parse_u8_str(const std::string& s, uint8_t& v) {
+inline bool parse_u8_str(const std::string& s, UINT8& v) {
     const unsigned long val = std::stoul(s);
     if (val > 255UL) return false;
-    v = static_cast<uint8_t>(val); return true;
+    v = static_cast<UINT8>(val); return true;
 }
 
 #endif //VJOY_FEEDER_FEEDER_H

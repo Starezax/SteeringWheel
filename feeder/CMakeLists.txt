@@ -10,8 +10,13 @@ set(VJOY_DLL_PATH "C:/Program Files/vJoy/x64/vJoyInterface.dll")
 set(VJOY_LIB_PATH "${CMAKE_SOURCE_DIR}/lib/vJoyInterface.lib")
 set(INC_PATH "${CMAKE_SOURCE_DIR}/inc")
 set(SRC_PATH "${CMAKE_SOURCE_DIR}/src")
-set(HEADERS "${INC_PATH}/feeder.h" "${INC_PATH}/public.h" "${INC_PATH}/vjoyinterface.h")
-set(SOURCES "${SRC_PATH}/feeder.cpp" "${SRC_PATH}/main.cpp" "${SRC_PATH}/serial_reader.cpp")
+set(HEADERS "${INC_PATH}/feeder.h" "${INC_PATH}/public.h" "${INC_PATH}/vjoyinterface.h" "${INC_PATH}/ffb.h")
+set(SOURCES
+    "${SRC_PATH}/feeder.cpp"
+    "${SRC_PATH}/main.cpp"
+    "${SRC_PATH}/serial_reader.cpp"
+    "${SRC_PATH}/ffb.cpp"
+)
 
 add_executable(vjoy_feeder ${SOURCES})
 
