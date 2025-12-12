@@ -11,6 +11,7 @@
 #include <ostream>
 #include <string>
 #include "public.h"
+#include "ffb.h"
 
 #define CLUTCH_AXIS HID_USAGE_SL0
 #define BRAKE_AXIS HID_USAGE_RZ
@@ -70,6 +71,7 @@ struct UARTFrame {
 
 bool readLineUntilEnd( HANDLE h, std::string& pending, std::string& out );
 std::optional<UARTFrame> parseFrame(const std::string& line);
+BOOL sendUART(HANDLE, INT8);
 HANDLE openSerial(const wchar_t* com_name, DWORD baud = CBR_9600);
 void feedGears(UINT, UINT8 gear, UINT8*);
 void feed(UINT, const UARTFrame&, UINT8*);

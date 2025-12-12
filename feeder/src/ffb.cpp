@@ -6,82 +6,102 @@
 
 #include <iostream>
 
-void ffbCallback(PVOID ffbPacket, PVOID userdata) {
-    auto* ctx = static_cast<FFBCtx*>(userdata);
-    const auto *packet = static_cast<FFB_DATA*>(ffbPacket);
-
+void FFBState::handlePacket(const FFB_DATA* packet)
+{
     if (!packet) return;
 
     FFBPType ptype;
     if (Ffb_h_Type(packet, &ptype) != ERROR_SUCCESS) return;
 
-    std::cout << "FFB type caught: " << ptype << std::endl;
-    std::cout << "------------------------------------------" << std::endl;
+    switch (ptype)
+    {
+        case PT_CONSTREP:
+            {
+                INT ebi = 0;
+                FFB_EFF_CONSTANT effect{};
+                if (Ffb_h_Eff_Constant(packet, &effect) != ERROR_SUCCESS) return;
+                if (Ffb_h_EBI(packet, &ebi) != ERROR_SUCCESS) return;
 
-    switch (ptype) {
-        case PT_CONSTREP: {
-            FFB_EFF_CONSTANT effect{};
-            if (Ffb_h_Eff_Constant(packet, &effect) != ERROR_SUCCESS) return;
+                const INT idx = normEBI(ebi);
+                if (idx >= MAX_EFFECTS) return;
 
-            FLOAT magNorm = static_cast<FLOAT>(effect.Magnitude) / 10000.0f;
-            if (magNorm > 1.0f) magNorm = 1.0f;
-            if (magNorm < -1.0f) magNorm = -1.0f;
-
-            ctx->torque.store(magNorm, std::memory_order_relaxed);
-
-            std::cout << "FFB_EFF_REPORT: " << std::endl;
-            std::cout << "Magnitude:\t" << effect.Magnitude << std::endl;
-            std::cout << "------------------------------------------" << std::endl;
-
-            break;
-        }
-        case PT_EFFREP: {
-            FFB_EFF_REPORT effect{};
-            if (Ffb_h_Eff_Report(packet, &effect) != ERROR_SUCCESS) return;
-            std::cout << "FFB_EFF_REPORT: " << std::endl;
-            std::cout << "Duration:\t" << effect.Duration << std::endl;
-            std::cout << "TrigerRpt:\t" << effect.TrigerRpt << std::endl;
-            std::cout << "SamplePrd:\t" << effect.SamplePrd << std::endl;
-            std::cout << "Gain:\t" << effect.Gain << std::endl;
-            std::cout << "TrigerBtn:\t" << effect.TrigerBtn << std::endl;
-            std::cout << "Polar:\t" << effect.Polar << std::endl;
-            std::cout << "Direction:\t" << static_cast<int>(effect.Direction) << std::endl;
-            std::cout << "DirY:\t" << effect.DirY << std::endl;
-            std::cout << "DirX:\t" << static_cast<int>(effect.DirX) << std::endl;
-            std::cout << "------------------------------------------" << std::endl;
-
-            break;
-        }
-        case PT_EFOPREP:{
-            FFB_EFF_OP op{};
-            if (Ffb_h_EffOp(packet, &op) != ERROR_SUCCESS) return;
-
-            if (op.EffectOp == EFF_STOP) {
-                ctx->torque.store(0.0f, std::memory_order_relaxed);
+                {
+                    auto const mag = complement2(effect.Magnitude);
+                    auto const magNorm = clamp(mag, -10000, 10000);
+                    std::cout << "FFB_EFF_REPORT: " << std::endl;
+                    std::cout << "Magnitude:\t" << static_cast<int>(mag) << std::endl;
+                    std::lock_guard lock(mut);
+                    effects[idx].constMag = magNorm;
+                    effects[idx].haveConst = TRUE;
+                }
+                break;
             }
-            std::cout << "FFB_EFF_OP: " << std::endl;
-            std::cout << "EffectOp:\t" << op.EffectOp << std::endl;
-            std::cout << "LoopCount:\t" << op.LoopCount << std::endl;
-            std::cout << "------------------------------------------" << std::endl;
+    case PT_EFOPREP:
+            {
+                INT ebi = 0;
+                FFB_EFF_OP op{};
+                if (Ffb_h_EffOp(packet, &op) != ERROR_SUCCESS) return;
+                if (Ffb_h_EBI(packet, &ebi) != ERROR_SUCCESS) return;
 
+                const INT idx = normEBI(ebi);
+                if (idx >= MAX_EFFECTS) return;
 
-            break;
-        }
-        case PT_GAINREP: {
-            BYTE gain = 0;
-            if (Ffb_h_DevGain(packet, &gain) != ERROR_SUCCESS) return;
+                {
+                    std::lock_guard lock(mut);
+                    if (op.EffectOp == EFF_STOP)
+                    {
+                        effects[idx].constMag = 0;
+                        effects[idx].active = FALSE;
+                    } else if (op.EffectOp == EFF_START || op.EffectOp == EFF_SOLO)
+                    {
+                        effects[idx].active = TRUE;
+                    }
+                }
 
-            std::cout << "PT_GAINREP: " << std::endl;
-            std::cout << "Gain:\t" << gain << std::endl;
-            std::cout << "------------------------------------------" << std::endl;
-            break;
+                break;
+            }
+    case PT_GAINREP:
+            {
+                BYTE gain = 0;
+                if (Ffb_h_DevGain(packet, &gain) != ERROR_SUCCESS) return;
 
-        }
-        default: {
-            std::cout << "Unhandled FFB type caught: " << ptype << std::endl;
-            std::cout << "------------------------------------------" << std::endl;
-            break;
-        }
+                {
+                    std::lock_guard<std::mutex> lock(mut);
+                    deviceGain = gain;
+                }
+                break;
+            }
+    case PT_EFFREP:
+            {
+                INT ebi = 0;
+                FFB_EFF_REPORT report{};
+                if (Ffb_h_Eff_Report(packet, &report) != ERROR_SUCCESS) return;
+                if (Ffb_h_EBI(packet, &ebi) != ERROR_SUCCESS) return;
+
+                const INT idx = normEBI(ebi);
+                if (idx >= MAX_EFFECTS) return;
+
+                {
+                    std::lock_guard lock(mut);
+                    effects[idx].gain = report.Gain;
+                }
+                break;
+            }
+        default: break;
     }
+}
 
+
+
+void ffbCallback(PVOID ffbPacket, PVOID userdata) {
+    auto* state = static_cast<FFBState*>(userdata);
+    const auto *packet = static_cast<FFB_DATA*>(ffbPacket);
+
+    if (!state || !packet) return;
+
+    FFBPType ptype;
+    if (Ffb_h_Type(packet, &ptype) == ERROR_SUCCESS) {
+        std::cout << "FFB type caught: " << ptype << "\n";
+    }
+    state->handlePacket(packet);
 }

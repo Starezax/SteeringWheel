@@ -6,6 +6,8 @@
 #include <windows.h>
 #include <iostream>
 #include <ostream>
+#include <random>
+#include <thread>
 
 #include "feeder.h"
 #include "ffb.h"
@@ -23,7 +25,11 @@ double emaClutch = 0.0;
 
 static std::atomic_bool running{true};
 
-static BOOL WINAPI CtrlHandler(DWORD type) {
+HANDLE h = INVALID_HANDLE_VALUE;
+FFBState ffbState{};
+
+
+static BOOL WINAPI CtrlHandler(const DWORD type) {
     switch (type) {
         case CTRL_C_EVENT:
         case CTRL_BREAK_EVENT:
@@ -37,6 +43,24 @@ static BOOL WINAPI CtrlHandler(DWORD type) {
     }
 }
 
+static void FFBDeliveryWorker() {
+    constexpr auto period = std::chrono::milliseconds(5);
+    INT8 last = 127;
+
+    while (running.load(std::memory_order_relaxed)) {
+        auto snap = ffbState.snapshot();
+        const INT8 val = ffbState.computeTorque(snap) * 100;
+        if (val != last) {
+            sendUART(h, val);
+            last = val;
+        }
+
+        // 200 Hz
+        std::this_thread::sleep_for(period);
+    }
+
+    sendUART(h, 0); // stop
+}
 
 
 int main() {
@@ -47,7 +71,7 @@ int main() {
     }
 
     constexpr UINT rID = 1;
-    const auto comName = L"\\\\.\\COM3";
+    const auto comName = L"\\\\.\\COM10";
 
     std::cout << "Initialized vJoy device ID: " << rID << std::endl;
     std::cout << "Vendor: " << TEXT(GetvJoyManufacturerString()) <<
@@ -66,12 +90,13 @@ int main() {
 
     ResetVJD(rID);
 
-    FFBCtx ffbCtx {};
-    ffbCtx.devID = rID;
-    FfbRegisterGenCB(ffbCallback, &ffbCtx);
+    ffbState.devID = rID;
+    FfbRegisterGenCB(ffbCallback, &ffbState);
 
-    HANDLE h = openSerial(comName, CBR_9600);
+    h = openSerial(comName, CBR_9600);
     if (h == INVALID_HANDLE_VALUE) return 1;
+
+    std::thread ffbThread(FFBDeliveryWorker);
 
     UINT8 lastGear = GEAR_1;
     std::string line;

@@ -126,6 +126,7 @@ bool readLineUntilEnd(
     const DWORD start = GetTickCount();
 
     for (;;) {
+
         if (const auto pos = pending.find('\n');
             pos != std::string::npos) {
 
@@ -159,3 +160,24 @@ bool readLineUntilEnd(
     }
 }
 
+
+BOOL sendUART(
+    HANDLE h,
+    const INT8 torque
+) {
+    CHAR buf[16];
+    const SIZE_T size = std::snprintf(buf, sizeof(buf), "%d\n", torque);
+
+    if (h == INVALID_HANDLE_VALUE) {
+        return FALSE;
+    }
+
+    DWORD written = 0;
+    return WriteFile(
+        h,
+        buf,
+        static_cast<DWORD>(size),
+        &written,
+        nullptr
+    ) && written == static_cast<DWORD>(size);
+}
