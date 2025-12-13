@@ -3,8 +3,7 @@ project(vjoy_feeder LANGUAGES CXX)
 
 set(CMAKE_CXX_STANDARD 17)
 set(CMAKE_CXX_STANDARD_REQUIRED ON)
-set(CMAKE_CXX_FLAGS "-Wall")
-set(CMAKE_CXX_FLAGS_RELEASE "-O0")
+set(CMAKE_CXX_FLAGS "-Wall -O3")
 
 set(VJOY_DLL_PATH "C:/Program Files/vJoy/x64/vJoyInterface.dll")
 set(VJOY_LIB_PATH "${CMAKE_SOURCE_DIR}/lib/vJoyInterface.lib")

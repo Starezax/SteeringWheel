@@ -71,9 +71,6 @@ inline void trimCRLF(std::string& s) {
 
 
 void normalizeInput(UARTFrame& f) {
-    // if (f.paddles < PADDLES_MIN) f.paddles = PADDLES_MIN;
-    // if (f.paddles > PADDLES_MAX) f.paddles = PADDLES_MAX;
-
     if (f.gear < GEAR_MIN) f.gear = GEAR_MIN;
     if (f.gear > GEAR_MAX) f.gear = GEAR_MAX;
 
@@ -133,7 +130,6 @@ bool readLineUntilEnd(
             out.assign(pending.begin(), pending.begin() + pos + 1);
             pending.erase(0, pos + 1);
             trimCRLF(out);
-            std::cout << "Line: " << out << std::endl;
             return true;
         }
 

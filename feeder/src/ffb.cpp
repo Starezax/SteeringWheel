@@ -15,6 +15,24 @@ void FFBState::handlePacket(const FFB_DATA* packet)
 
     switch (ptype)
     {
+    case PT_NEWEFREP:
+        {
+            INT ebi = 0;
+            FFBEType effType{};
+            if (Ffb_h_EffNew(packet, &effType) != ERROR_SUCCESS) return;
+            if (Ffb_h_EBI(packet, &ebi) != ERROR_SUCCESS) return;
+
+            const INT idx = normEBI(ebi);
+            if (idx >= MAX_EFFECTS) return;
+
+            {
+                std::lock_guard lock(mut);
+                effects[idx] = Effect{};
+                effects[idx].kind = effType;
+            }
+
+            break;
+        }
         case PT_CONSTREP:
             {
                 INT ebi = 0;
@@ -25,15 +43,46 @@ void FFBState::handlePacket(const FFB_DATA* packet)
                 const INT idx = normEBI(ebi);
                 if (idx >= MAX_EFFECTS) return;
 
+
                 {
                     auto const mag = complement2(effect.Magnitude);
                     auto const magNorm = clamp(mag, -10000, 10000);
                     std::cout << "FFB_EFF_REPORT: " << std::endl;
-                    std::cout << "Magnitude:\t" << static_cast<int>(mag) << std::endl;
                     std::lock_guard lock(mut);
+                    effects[idx].active = TRUE;
                     effects[idx].constMag = magNorm;
-                    effects[idx].haveConst = TRUE;
+                    effects[idx].haveConst = TRUE;\
+                    std::cout << "Magnitude:\t" << static_cast<int>(mag) << std::endl;
+
                 }
+                break;
+            }
+    case PT_CONDREP:
+            {
+                INT ebi = 0;
+                FFB_EFF_COND cond{};
+                if (Ffb_h_Eff_Cond(packet, &cond) != ERROR_SUCCESS) return;
+                if (Ffb_h_EBI(packet, &ebi) != ERROR_SUCCESS) return;
+
+                const INT idx = normEBI(ebi);
+                if (idx >= MAX_EFFECTS) return;
+                if (cond.isY == 1) return;
+
+                ConditionAxis cx;
+                cx.centerPointOffset    = clamp(complement2(cond.CenterPointOffset), -10000, 10000);
+                cx.deadBand             = static_cast<UINT16>(min(static_cast<int>(cond.DeadBand), 10000));
+                cx.posCoef              = clamp(complement2(cond.PosCoeff), -10000, 10000);
+                cx.negCoef              = clamp(complement2(cond.NegCoeff), -10000, 10000);
+                cx.posSat               = static_cast<UINT16>(min(static_cast<int>(cond.PosSatur), 10000));
+                cx.negSat               = static_cast<UINT16>(min(static_cast<int>(cond.NegSatur), 10000));
+
+                {
+                    std::lock_guard lock(mut);
+                    effects[idx].condX = cx;
+                    effects[idx].haveCondX = TRUE;
+                }
+
+                std::cout << "EBI:\t" << static_cast<INT>(cond.EffectBlockIndex) << std::endl;
                 break;
             }
     case PT_EFOPREP:
@@ -66,25 +115,26 @@ void FFBState::handlePacket(const FFB_DATA* packet)
                 if (Ffb_h_DevGain(packet, &gain) != ERROR_SUCCESS) return;
 
                 {
-                    std::lock_guard<std::mutex> lock(mut);
+                    std::lock_guard lock(mut);
                     deviceGain = gain;
                 }
                 break;
             }
     case PT_EFFREP:
             {
-                INT ebi = 0;
-                FFB_EFF_REPORT report{};
-                if (Ffb_h_Eff_Report(packet, &report) != ERROR_SUCCESS) return;
-                if (Ffb_h_EBI(packet, &ebi) != ERROR_SUCCESS) return;
+                FFB_EFF_CONST report{};
+                if (Ffb_h_Eff_Const(packet, &report) != ERROR_SUCCESS) return;
 
-                const INT idx = normEBI(ebi);
+                const INT idx = normEBI(report.EffectBlockIndex);
                 if (idx >= MAX_EFFECTS) return;
 
                 {
                     std::lock_guard lock(mut);
+                    effects[idx].kind = report.EffectType;
                     effects[idx].gain = report.Gain;
                 }
+                std::cout << "PT_EFFREP: " << report.EffectType << std::endl;
+
                 break;
             }
         default: break;

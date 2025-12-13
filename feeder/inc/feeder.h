@@ -5,6 +5,7 @@
 #ifndef VJOY_FEEDER_FEEDER_H
 #define VJOY_FEEDER_FEEDER_H
 
+#include <algorithm>
 #include <iostream>
 #include <windows.h>
 #include <optional>
@@ -29,6 +30,7 @@
 #define R3_BTN 6
 #define L4_BTN 7
 #define R4_BTN 8
+#define HANDBRAKE_BTN 18
 
 #define GEAR_1 11
 #define GEAR_2 12
@@ -67,6 +69,13 @@ struct UARTFrame {
     UINT16 acceleration = PEDAL_MIN;
     UINT8 gear = GEAR_MIN;
     UINT16 buttons = 0;
+
+    FLOAT normalizeWheel() const
+    {
+        static FLOAT axisCenter = static_cast<FLOAT>(AXIS_MAX / 2);
+        const FLOAT val = (wheel - axisCenter) / axisCenter;
+        return std::clamp(val, -1.0f, 1.0f);
+    }
 };
 
 bool readLineUntilEnd( HANDLE h, std::string& pending, std::string& out );

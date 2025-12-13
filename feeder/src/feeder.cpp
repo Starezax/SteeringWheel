@@ -82,6 +82,7 @@ void feed(const UINT rID, const UARTFrame &f, UINT8 *lastGear) {
     SetBtn(isSet(f.buttons, 7), rID, R3_BTN);
     SetBtn(isSet(f.buttons, 8), rID, L4_BTN);
     SetBtn(isSet(f.buttons, 9), rID, R4_BTN);
+    SetBtn(isSet(f.buttons, 10), rID, HANDBRAKE_BTN);
 
     // gears
     feedGears(rID, f.gear, lastGear);

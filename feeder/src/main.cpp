@@ -24,6 +24,7 @@ double emaBrake = 0.0;
 double emaClutch = 0.0;
 
 static std::atomic_bool running{true};
+static std::atomic lastWheelPos{0.0f};
 
 HANDLE h = INVALID_HANDLE_VALUE;
 FFBState ffbState{};
@@ -44,18 +45,21 @@ static BOOL WINAPI CtrlHandler(const DWORD type) {
 }
 
 static void FFBDeliveryWorker() {
-    constexpr auto period = std::chrono::milliseconds(5);
+    constexpr auto period = std::chrono::milliseconds(1);
     INT8 last = 127;
-
+    INT8 val = 0;
+    FLOAT torque = 0.0f;
     while (running.load(std::memory_order_relaxed)) {
         auto snap = ffbState.snapshot();
-        const INT8 val = ffbState.computeTorque(snap) * 100;
+        torque = ffbState.computeTorque(snap, lastWheelPos.load(std::memory_order_relaxed));
+        val = static_cast<INT8>(torque * 100);
         if (val != last) {
             sendUART(h, val);
             last = val;
+            std::cout << "Torque: " << static_cast<INT>(val) << std::endl;
         }
 
-        // 200 Hz
+        // 1 kHz
         std::this_thread::sleep_for(period);
     }
 
@@ -71,7 +75,7 @@ int main() {
     }
 
     constexpr UINT rID = 1;
-    const auto comName = L"\\\\.\\COM10";
+    const auto comName = L"\\\\.\\COM3";
 
     std::cout << "Initialized vJoy device ID: " << rID << std::endl;
     std::cout << "Vendor: " << TEXT(GetvJoyManufacturerString()) <<
@@ -93,7 +97,7 @@ int main() {
     ffbState.devID = rID;
     FfbRegisterGenCB(ffbCallback, &ffbState);
 
-    h = openSerial(comName, CBR_9600);
+    h = openSerial(comName, CBR_115200);
     if (h == INVALID_HANDLE_VALUE) return 1;
 
     std::thread ffbThread(FFBDeliveryWorker);
@@ -106,10 +110,11 @@ int main() {
             continue;
         }
 
-        std::optional<UARTFrame> f_or_none = parseFrame(line);
-        if (!f_or_none || !f_or_none.has_value()) continue;
-        UARTFrame f = f_or_none.value();
+        std::optional<UARTFrame> frameOrNone = parseFrame(line);
+        if (!frameOrNone || !frameOrNone.has_value()) continue;
+        UARTFrame f = frameOrNone.value();
 
+        lastWheelPos.store(f.normalizeWheel(), std::memory_order_relaxed);
         f.clutch = scalePedal(f.clutch, clutchPedal, &emaClutch);
         f.brake = scalePedal(f.brake, brakePedal, &emaBrake);
         f.acceleration = scalePedal(f.acceleration, accPedal, &emaAcc);
