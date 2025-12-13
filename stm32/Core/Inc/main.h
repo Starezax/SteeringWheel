@@ -87,6 +87,8 @@ void Error_Handler(void);
 #define LD5_GPIO_Port GPIOD
 #define LD6_Pin GPIO_PIN_15
 #define LD6_GPIO_Port GPIOD
+#define HANDBREAK_Pin GPIO_PIN_6
+#define HANDBREAK_GPIO_Port GPIOC
 #define I2S3_MCK_Pin GPIO_PIN_7
 #define I2S3_MCK_GPIO_Port GPIOC
 #define BUTTON_3_Pin GPIO_PIN_8

@@ -22,11 +22,16 @@
 
 /* Private includes ----------------------------------------------------------*/
 /* USER CODE BEGIN Includes */
-
+#include <stdio.h>
+#include <stdlib.h>
 /* USER CODE END Includes */
 
 /* Private typedef -----------------------------------------------------------*/
 /* USER CODE BEGIN PTD */
+#define PWM_MIN_FWD  1
+#define PWM_MIN_REV  1
+#define PWM_MAX      100
+#define UART_TIMEOUT_MS 20
 
 /* USER CODE END PTD */
 
@@ -49,6 +54,7 @@ I2S_HandleTypeDef hi2s2;
 TIM_HandleTypeDef htim1;
 TIM_HandleTypeDef htim2;
 TIM_HandleTypeDef htim3;
+TIM_HandleTypeDef htim4;
 
 UART_HandleTypeDef huart2;
 
@@ -66,6 +72,7 @@ static void MX_TIM2_Init(void);
 static void MX_ADC1_Init(void);
 static void MX_TIM1_Init(void);
 static void MX_TIM3_Init(void);
+static void MX_TIM4_Init(void);
 void MX_USB_HOST_Process(void);
 
 /* USER CODE BEGIN PFP */
@@ -88,10 +95,19 @@ uint8_t calib_stage = 0;
 char msg[100];
 uint8_t rx_byte;
 char uart_buffer[32];
-uint8_t uart_index = 0;
 uint8_t gear = 0;
 uint16_t counter_val = 0;
 uint16_t normalized_counter = 0;
+volatile int8_t ffb_force = 0;
+uint8_t rx_byte;
+char uart_buffer[32];
+uint8_t uart_index = 0;
+static int16_t last_force = 0;
+volatile int16_t target_force = 0;
+static int8_t last_dir = 0;
+static uint32_t brake_until = 0;
+volatile uint32_t last_uart_rx_tick = 0;
+
 
 static uint16_t ring_distance(uint16_t from, uint16_t to){
     return (uint16_t)(to - from);
@@ -118,47 +134,66 @@ uint16_t percent_to_pwm(uint8_t percent)
     if (percent > 100) percent = 100;
     return (percent * htim3.Init.Period) / 100;
 }
-
-void motor_right(uint8_t percent)
+void motor_brake(void)
 {
-    uint16_t pwm = percent_to_pwm(percent);
-    __HAL_TIM_SET_COMPARE(&htim3, TIM_CHANNEL_1, 0);
-    __HAL_TIM_SET_COMPARE(&htim3, TIM_CHANNEL_2, pwm);
+    uint16_t soft = htim3.Init.Period / 2;
+    __HAL_TIM_SET_COMPARE(&htim3, TIM_CHANNEL_1, soft);
+    __HAL_TIM_SET_COMPARE(&htim3, TIM_CHANNEL_2, soft);
 }
-
-void motor_left(uint8_t percent)
+void motor_stop(void)
+{
+    __HAL_TIM_SET_COMPARE(&htim3, TIM_CHANNEL_1, 0);
+    __HAL_TIM_SET_COMPARE(&htim3, TIM_CHANNEL_2, 0);
+}
+void motor_right(uint8_t percent)
 {
     uint16_t pwm = percent_to_pwm(percent);
     __HAL_TIM_SET_COMPARE(&htim3, TIM_CHANNEL_1, pwm);
     __HAL_TIM_SET_COMPARE(&htim3, TIM_CHANNEL_2, 0);
 }
 
-void motor_stop(void)
+void motor_left(uint8_t percent)
 {
-    __HAL_TIM_SET_COMPARE(&htim3, TIM_CHANNEL_1, 100);
-    __HAL_TIM_SET_COMPARE(&htim3, TIM_CHANNEL_2, 100);
-    HAL_Delay(100);
+    uint16_t pwm = percent_to_pwm(percent);
+    __HAL_TIM_SET_COMPARE(&htim3, TIM_CHANNEL_1, 0);
+    __HAL_TIM_SET_COMPARE(&htim3, TIM_CHANNEL_2, pwm);
 }
+
+
+void uart_execute_command(char *cmd)
+{
+    int power = atoi(cmd);
+    target_force = power;
+}
+
+void uart_process_byte(uint8_t byte)
+{
+    if (byte == '\n' || byte == '\r')
+    {
+        uart_execute_command(uart_buffer);
+        uart_index = 0;
+        return;
+    }
+
+    if ((byte >= '0' && byte <= '9') || byte == '-')
+    {
+        if (uart_index < sizeof(uart_buffer) - 1)
+            uart_buffer[uart_index++] = byte;
+    }
+}
+
 void HAL_UART_RxCpltCallback(UART_HandleTypeDef *huart)
 {
     if (huart->Instance == USART2)
     {
-        if (rx_byte == '0')
-        {
-            motor_left(100);
-        }
-        else if (rx_byte == '1')
-        {
-            motor_right(100);
-        }
-        else if (rx_byte == 'S' || rx_byte == '2')
-        {
-            motor_stop();
-        }
-
+    	last_uart_rx_tick = HAL_GetTick();
+        uart_process_byte(rx_byte);
         HAL_UART_Receive_IT(&huart2, &rx_byte, 1);
     }
 }
+
+
+
 uint32_t read_adc_avg(ADC_HandleTypeDef* hadc, uint32_t channel) {
     ADC_ChannelConfTypeDef sConfig = {0};
     sConfig.Channel = channel;
@@ -176,18 +211,17 @@ uint32_t read_adc_avg(ADC_HandleTypeDef* hadc, uint32_t channel) {
     return sum / 10;
 }
 
-
 void calibration(uint16_t *encoder_min, uint16_t *encoder_max, uint16_t power)
 {
     uint16_t center = 16383;
     while (HAL_GPIO_ReadPin(GPIOB, CALIBRATION_BUTTON_1_Pin) != GPIO_PIN_RESET)
     {
-    	motor_left(power);
+    	motor_right(power);
     }
     *encoder_max = __HAL_TIM_GET_COUNTER(&htim2);
     while ((HAL_GPIO_ReadPin(GPIOB, CALIBRATION_BUTTON_2_Pin) != GPIO_PIN_RESET))
     {
-        motor_right(power);
+        motor_left(power);
     }
     *encoder_min = __HAL_TIM_GET_COUNTER(&htim2);
 
@@ -198,7 +232,7 @@ void calibration(uint16_t *encoder_min, uint16_t *encoder_max, uint16_t power)
 		counter_val = __HAL_TIM_GET_COUNTER(&htim2);
 	    normalized_counter = encode_to_15bit(counter_val, *encoder_min, *encoder_max);
 	    if (normalized_counter > (center + 4000)){
-	    	motor_left(power);
+	    	motor_right(power);
 	    }
 	    else{
 	    	motor_stop();
@@ -251,6 +285,7 @@ int main(void)
   MX_ADC1_Init();
   MX_TIM1_Init();
   MX_TIM3_Init();
+  MX_TIM4_Init();
   /* USER CODE BEGIN 2 */
 
   GPIO_InitTypeDef GPIO_InitStruct = {0};
@@ -277,102 +312,142 @@ int main(void)
   HAL_TIM_PWM_Start(&htim3, TIM_CHANNEL_1);
   HAL_TIM_PWM_Start(&htim3, TIM_CHANNEL_2);
 
-  HAL_UART_Receive_IT(&huart2, &rx_byte, 1);
-
   HAL_Delay(3000);
-  calibration(&encoder_min, &encoder_max, 25);
+  calibration(&encoder_min, &encoder_max, 13);
+  HAL_UART_Receive_IT(&huart2, &rx_byte, 1);
   /* USER CODE END 2 */
 
   /* Infinite loop */
   /* USER CODE BEGIN WHILE */
-  while (1) {
-    		   MX_USB_HOST_Process();
-    		   counterValue = (uint16_t)__HAL_TIM_GET_COUNTER(&htim2);
+  while (1){
+			   MX_USB_HOST_Process();
+			   uint32_t now = HAL_GetTick();
+			   counterValue = (uint16_t)__HAL_TIM_GET_COUNTER(&htim2);
 
-    		   button_mask = 0;
-    		   gear = 0;
-    		   if (HAL_GPIO_ReadPin(GPIOE, GPIO_PIN_7) == GPIO_PIN_RESET)
-    			   button_mask |= (1 << 0);
+         		   button_mask = 0;
+         		   gear = 0;
+         		   if (HAL_GPIO_ReadPin(GPIOE, GPIO_PIN_7) == GPIO_PIN_RESET)
+         			   button_mask |= (1 << 0);
 
-    		   if (HAL_GPIO_ReadPin(GPIOE, GPIO_PIN_8) == GPIO_PIN_RESET)
-    			   button_mask |= (1 << 1);
+         		   if (HAL_GPIO_ReadPin(GPIOE, GPIO_PIN_8) == GPIO_PIN_RESET)
+         			   button_mask |= (1 << 1);
 
-    		   if (HAL_GPIO_ReadPin(GEAR_1_GPIO_Port, GEAR_1_Pin) == GPIO_PIN_RESET)
-    			 gear = 1;
+         		   if (HAL_GPIO_ReadPin(GEAR_1_GPIO_Port, GEAR_1_Pin) == GPIO_PIN_RESET)
+         			 gear = 1;
 
-    		   if (HAL_GPIO_ReadPin(GEAR_2_GPIO_Port, GEAR_2_Pin) == GPIO_PIN_RESET)
-    			 gear = 2;
+         		   if (HAL_GPIO_ReadPin(GEAR_2_GPIO_Port, GEAR_2_Pin) == GPIO_PIN_RESET)
+         			 gear = 2;
 
-    		   if (HAL_GPIO_ReadPin(GEAR_3_GPIO_Port, GEAR_3_Pin) == GPIO_PIN_RESET)
-    			 gear = 3;
+         		   if (HAL_GPIO_ReadPin(GEAR_3_GPIO_Port, GEAR_3_Pin) == GPIO_PIN_RESET)
+         			 gear = 3;
 
-    		   if (HAL_GPIO_ReadPin(GEAR_4_GPIO_Port, GEAR_4_Pin) == GPIO_PIN_RESET)
-    			 gear = 4;
+         		   if (HAL_GPIO_ReadPin(GEAR_4_GPIO_Port, GEAR_4_Pin) == GPIO_PIN_RESET)
+         			 gear = 4;
 
-    		   if (HAL_GPIO_ReadPin(GEAR_5_GPIO_Port, GEAR_5_Pin) == GPIO_PIN_RESET)
-    			 gear = 5;
+         		   if (HAL_GPIO_ReadPin(GEAR_5_GPIO_Port, GEAR_5_Pin) == GPIO_PIN_RESET)
+         			 gear = 5;
 
-    		   if (HAL_GPIO_ReadPin(GEAR_6_GPIO_Port, GEAR_6_Pin) == GPIO_PIN_RESET)
-    			 gear = 6;
+         		   if (HAL_GPIO_ReadPin(GEAR_6_GPIO_Port, GEAR_6_Pin) == GPIO_PIN_RESET)
+         			 gear = 6;
 
-    		   if ((HAL_GPIO_ReadPin(GEAR_6_GPIO_Port, GEAR_6_Pin) == GPIO_PIN_RESET)
-    				   && ((HAL_GPIO_ReadPin(GPIOB, R_ENABLE_Pin) == GPIO_PIN_RESET))){
-    			 gear = 7;
-    		   }
+         		   if ((HAL_GPIO_ReadPin(GEAR_6_GPIO_Port, GEAR_6_Pin) == GPIO_PIN_RESET)
+         				   && ((HAL_GPIO_ReadPin(GPIOB, R_ENABLE_Pin) == GPIO_PIN_RESET))){
+         			 gear = 7;
+         		   }
 
-    		   if (HAL_GPIO_ReadPin(GPIOA, BUTTON_1_Pin) == GPIO_PIN_RESET){
-    			 button_mask |= (1 << 2);
-    		   }
-    		   if (HAL_GPIO_ReadPin(GPIOD, BUTTON_2_Pin) == GPIO_PIN_RESET){
-    			   button_mask |= (1 << 3);
-    		   }
-    		   if (HAL_GPIO_ReadPin(GPIOC, BUTTON_3_Pin) == GPIO_PIN_RESET){
-    			  button_mask |= (1 << 4);
-    		   }
-    		   if (HAL_GPIO_ReadPin(GPIOD, BUTTON_4_Pin) == GPIO_PIN_RESET){
-    			  button_mask |= (1 << 5);
-    		   }
-    		   if (HAL_GPIO_ReadPin(GPIOC, BUTTON_6_Pin) == GPIO_PIN_RESET){
-    				  button_mask |= (1 << 7);
-    			 }
-    		   if (HAL_GPIO_ReadPin(GPIOC, BUTTON_7_Pin) == GPIO_PIN_RESET){
-    				  button_mask |= (1 << 8);
-    			 }
-    		   if (HAL_GPIO_ReadPin(GPIOB, BUTTON_8_Pin) == GPIO_PIN_RESET){
-    				  button_mask |= (1 << 9);
-    			 }
-    		   if (HAL_GPIO_ReadPin(GPIOD, BUTTON_5_Pin) == GPIO_PIN_RESET){
-    				  button_mask |= (1 << 6);
-    			 }
-    		   normalizedCounter = encode_to_15bit(counterValue, encoder_min, encoder_max);
+         		   if (HAL_GPIO_ReadPin(GPIOA, BUTTON_1_Pin) == GPIO_PIN_RESET){
+         			 button_mask |= (1 << 2);
+         		   }
+         		   if (HAL_GPIO_ReadPin(GPIOD, BUTTON_2_Pin) == GPIO_PIN_RESET){
+         			   button_mask |= (1 << 3);
+         		   }
+         		   if (HAL_GPIO_ReadPin(GPIOC, BUTTON_3_Pin) == GPIO_PIN_RESET){
+         			  button_mask |= (1 << 4);
+         		   }
+         		   if (HAL_GPIO_ReadPin(GPIOD, BUTTON_4_Pin) == GPIO_PIN_RESET){
+         			  button_mask |= (1 << 5);
+         		   }
+         		   if (HAL_GPIO_ReadPin(GPIOC, BUTTON_6_Pin) == GPIO_PIN_RESET){
+         				  button_mask |= (1 << 7);
+         			 }
+         		   if (HAL_GPIO_ReadPin(GPIOC, BUTTON_7_Pin) == GPIO_PIN_RESET){
+         				  button_mask |= (1 << 8);
+         			 }
+         		   if (HAL_GPIO_ReadPin(GPIOB, BUTTON_8_Pin) == GPIO_PIN_RESET){
+         				  button_mask |= (1 << 9);
+         			 }
+         		   if (HAL_GPIO_ReadPin(GPIOD, BUTTON_5_Pin) == GPIO_PIN_RESET){
+         				  button_mask |= (1 << 6);
+         			 }
+         		   if (HAL_GPIO_ReadPin(GPIOC, HANDBREAK_Pin) == GPIO_PIN_RESET){
+         		      	button_mask |= (1 << 10);
+         		   }
+         		   normalizedCounter = encode_to_15bit(counterValue, encoder_min, encoder_max);
 
-    		   accelerator = read_adc_avg(&hadc1, ADC_CHANNEL_8);
-    		   brake = read_adc_avg(&hadc1, ADC_CHANNEL_14);
-    		   clutch = read_adc_avg(&hadc1, ADC_CHANNEL_15);
+         		   accelerator = read_adc_avg(&hadc1, ADC_CHANNEL_8);
+         		   brake = read_adc_avg(&hadc1, ADC_CHANNEL_14);
+         		   clutch = read_adc_avg(&hadc1, ADC_CHANNEL_15);
 
-    		   uint8_t calibration_buttons = 0;
+         		   uint8_t calibration_buttons = 0;
 
-    		  if (HAL_GPIO_ReadPin(GPIOB, CALIBRATION_BUTTON_1_Pin) == GPIO_PIN_RESET){
-    			   calibration_buttons = 1;
-    		  }
-    		  if (HAL_GPIO_ReadPin(GPIOB, CALIBRATION_BUTTON_2_Pin) == GPIO_PIN_RESET){
-    			   calibration_buttons = 2;
-    		  }
+         		  if (HAL_GPIO_ReadPin(GPIOB, CALIBRATION_BUTTON_1_Pin) == GPIO_PIN_RESET){
+         			   calibration_buttons = 1;
+         		  }
+         		  if (HAL_GPIO_ReadPin(GPIOB, CALIBRATION_BUTTON_2_Pin) == GPIO_PIN_RESET){
+         			   calibration_buttons = 2;
+         		  }
 
+				sprintf(msg, "%u|%lu|%lu|%lu|%u|%u\r\n",
+					normalizedCounter,
+					brake,
+					 clutch,
+					accelerator,
+					gear,
+					button_mask);
+				HAL_UART_Transmit(&huart2, (uint8_t*)msg, strlen(msg), HAL_MAX_DELAY);
+				int16_t force = target_force;
 
+					if ((now - last_uart_rx_tick) > UART_TIMEOUT_MS)
+					{
+//						target_force = 0;
+						motor_stop();
+						last_dir = 0;
+						continue;
+					}
 
-                   sprintf(msg, "%u|%lu|%lu|%lu|%u|%u\r\n",
-                		normalizedCounter,
-						brake,
-                        clutch,
-						accelerator,
-        				gear,
-    					button_mask);
-                   HAL_UART_Transmit(&huart2, (uint8_t*)msg, strlen(msg), HAL_MAX_DELAY);
+					if (HAL_GetTick() < brake_until)
+					{
+						motor_brake();
+					}
 
-      	 	 }
-      	 /* USER CODE END 3 */
+					uint8_t mag = abs(force);
 
+					if (mag > PWM_MAX) mag = PWM_MAX;
+
+					if (force > 0)
+					{
+						if (mag < PWM_MIN_FWD) mag = PWM_MIN_FWD;
+						if ((HAL_GPIO_ReadPin(GPIOB, CALIBRATION_BUTTON_1_Pin) != GPIO_PIN_RESET) && (HAL_GPIO_ReadPin(GPIOB, CALIBRATION_BUTTON_2_Pin) != GPIO_PIN_RESET))
+						{
+						motor_right(mag);
+						}
+					}
+					else if (force < 0)
+					{
+						if (mag < PWM_MIN_REV) mag = PWM_MIN_REV;
+						if ((HAL_GPIO_ReadPin(GPIOB, CALIBRATION_BUTTON_1_Pin) != GPIO_PIN_RESET) && (HAL_GPIO_ReadPin(GPIOB, CALIBRATION_BUTTON_2_Pin) != GPIO_PIN_RESET))
+						{
+						motor_left(mag);
+						}
+					}
+					else
+					{
+					    motor_stop();
+					}
+           	 	 }
+           	 /* USER CODE END 3 */
+
+  /* USER CODE END 3 */
 }
 
 /**
@@ -671,7 +746,7 @@ static void MX_TIM3_Init(void)
   htim3.Instance = TIM3;
   htim3.Init.Prescaler = 83;
   htim3.Init.CounterMode = TIM_COUNTERMODE_UP;
-  htim3.Init.Period = 49;
+  htim3.Init.Period = 999;
   htim3.Init.ClockDivision = TIM_CLOCKDIVISION_DIV1;
   htim3.Init.AutoReloadPreload = TIM_AUTORELOAD_PRELOAD_ENABLE;
   if (HAL_TIM_PWM_Init(&htim3) != HAL_OK)
@@ -708,6 +783,51 @@ static void MX_TIM3_Init(void)
 }
 
 /**
+  * @brief TIM4 Initialization Function
+  * @param None
+  * @retval None
+  */
+static void MX_TIM4_Init(void)
+{
+
+  /* USER CODE BEGIN TIM4_Init 0 */
+
+  /* USER CODE END TIM4_Init 0 */
+
+  TIM_ClockConfigTypeDef sClockSourceConfig = {0};
+  TIM_MasterConfigTypeDef sMasterConfig = {0};
+
+  /* USER CODE BEGIN TIM4_Init 1 */
+
+  /* USER CODE END TIM4_Init 1 */
+  htim4.Instance = TIM4;
+  htim4.Init.Prescaler = 83;
+  htim4.Init.CounterMode = TIM_COUNTERMODE_UP;
+  htim4.Init.Period = 999;
+  htim4.Init.ClockDivision = TIM_CLOCKDIVISION_DIV1;
+  htim4.Init.AutoReloadPreload = TIM_AUTORELOAD_PRELOAD_DISABLE;
+  if (HAL_TIM_Base_Init(&htim4) != HAL_OK)
+  {
+    Error_Handler();
+  }
+  sClockSourceConfig.ClockSource = TIM_CLOCKSOURCE_INTERNAL;
+  if (HAL_TIM_ConfigClockSource(&htim4, &sClockSourceConfig) != HAL_OK)
+  {
+    Error_Handler();
+  }
+  sMasterConfig.MasterOutputTrigger = TIM_TRGO_RESET;
+  sMasterConfig.MasterSlaveMode = TIM_MASTERSLAVEMODE_DISABLE;
+  if (HAL_TIMEx_MasterConfigSynchronization(&htim4, &sMasterConfig) != HAL_OK)
+  {
+    Error_Handler();
+  }
+  /* USER CODE BEGIN TIM4_Init 2 */
+
+  /* USER CODE END TIM4_Init 2 */
+
+}
+
+/**
   * @brief USART2 Initialization Function
   * @param None
   * @retval None
@@ -723,7 +843,7 @@ static void MX_USART2_UART_Init(void)
 
   /* USER CODE END USART2_Init 1 */
   huart2.Instance = USART2;
-  huart2.Init.BaudRate = 9600;
+  huart2.Init.BaudRate = 115200;
   huart2.Init.WordLength = UART_WORDLENGTH_8B;
   huart2.Init.StopBits = UART_STOPBITS_1;
   huart2.Init.Parity = UART_PARITY_NONE;
@@ -836,6 +956,12 @@ static void MX_GPIO_Init(void)
   GPIO_InitStruct.Speed = GPIO_SPEED_FREQ_LOW;
   HAL_GPIO_Init(GPIOD, &GPIO_InitStruct);
 
+  /*Configure GPIO pins : HANDBREAK_Pin BUTTON_3_Pin BUTTON_7_Pin BUTTON_6_Pin */
+  GPIO_InitStruct.Pin = HANDBREAK_Pin|BUTTON_3_Pin|BUTTON_7_Pin|BUTTON_6_Pin;
+  GPIO_InitStruct.Mode = GPIO_MODE_INPUT;
+  GPIO_InitStruct.Pull = GPIO_PULLUP;
+  HAL_GPIO_Init(GPIOC, &GPIO_InitStruct);
+
   /*Configure GPIO pin : I2S3_MCK_Pin */
   GPIO_InitStruct.Pin = I2S3_MCK_Pin;
   GPIO_InitStruct.Mode = GPIO_MODE_AF_PP;
@@ -843,12 +969,6 @@ static void MX_GPIO_Init(void)
   GPIO_InitStruct.Speed = GPIO_SPEED_FREQ_LOW;
   GPIO_InitStruct.Alternate = GPIO_AF6_SPI3;
   HAL_GPIO_Init(I2S3_MCK_GPIO_Port, &GPIO_InitStruct);
-
-  /*Configure GPIO pins : BUTTON_3_Pin BUTTON_7_Pin BUTTON_6_Pin */
-  GPIO_InitStruct.Pin = BUTTON_3_Pin|BUTTON_7_Pin|BUTTON_6_Pin;
-  GPIO_InitStruct.Mode = GPIO_MODE_INPUT;
-  GPIO_InitStruct.Pull = GPIO_PULLUP;
-  HAL_GPIO_Init(GPIOC, &GPIO_InitStruct);
 
   /*Configure GPIO pin : BUTTON_1_Pin */
   GPIO_InitStruct.Pin = BUTTON_1_Pin;
