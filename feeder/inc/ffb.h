@@ -21,7 +21,7 @@
 class FFBState
 {
 public:
-    UINT devID;
+    UINT devID = 1;
 
     struct ConditionAxis
     {
@@ -128,7 +128,7 @@ private:
     {
         if (ebi == 0) return 0;
         const INT idx = static_cast<INT>(ebi) - 1;
-        return (idx < 0) ? 0 : idx;
+        return idx;
     }
 
     mutable std::mutex mut;

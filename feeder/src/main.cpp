@@ -111,8 +111,8 @@ int main() {
         }
 
         std::optional<UARTFrame> frameOrNone = parseFrame(line);
-        if (!frameOrNone || !frameOrNone.has_value()) continue;
-        UARTFrame f = frameOrNone.value();
+        if (!frameOrNone) continue;
+        UARTFrame f = *frameOrNone;
 
         lastWheelPos.store(f.normalizeWheel(), std::memory_order_relaxed);
         f.clutch = scalePedal(f.clutch, clutchPedal, &emaClutch);
@@ -124,5 +124,6 @@ int main() {
 
     CloseHandle(h);
     cleanup(rID);
+    ffbThread.join();
     return 0;
 }

@@ -94,7 +94,7 @@ std::optional<UARTFrame> parseFrame(const std::string& line) {
                                 : clean.substr(start, comma - start);
 
         if (token.empty()) return std::nullopt;
-        vals[idx] = token;
+        vals[idx] = std::move(token);
         if (comma == std::string::npos) break;
         start = comma + 1;
     }

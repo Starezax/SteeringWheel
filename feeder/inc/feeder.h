@@ -72,7 +72,7 @@ struct UARTFrame {
 
     FLOAT normalizeWheel() const
     {
-        static FLOAT axisCenter = static_cast<FLOAT>(AXIS_MAX / 2);
+        constexpr auto axisCenter = static_cast<FLOAT>(AXIS_MAX / 2);
         const FLOAT val = (wheel - axisCenter) / axisCenter;
         return std::clamp(val, -1.0f, 1.0f);
     }

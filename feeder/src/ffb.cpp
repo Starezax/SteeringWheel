@@ -42,8 +42,6 @@ void FFBState::handlePacket(const FFB_DATA* packet)
 
                 const INT idx = normEBI(ebi);
                 if (idx >= MAX_EFFECTS) return;
-
-
                 {
                     auto const mag = complement2(effect.Magnitude);
                     auto const magNorm = clamp(mag, -10000, 10000);
@@ -66,7 +64,7 @@ void FFBState::handlePacket(const FFB_DATA* packet)
 
                 const INT idx = normEBI(ebi);
                 if (idx >= MAX_EFFECTS) return;
-                if (cond.isY == 1) return;
+                if (cond.isY) return;
 
                 ConditionAxis cx;
                 cx.centerPointOffset    = clamp(complement2(cond.CenterPointOffset), -10000, 10000);
